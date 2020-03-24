@@ -55,6 +55,7 @@ static void usage_msg(FILE* f)
   fprintf(f, "  --runtime SECONDS\n");
   fprintf(f, "  --raw FILENAME-PREFIX\n");
   fprintf(f, "  --cores COMMA-SEP-LIST-OF-CORES-OR-RANGES\n");
+  fprintf(f, "  --master-core CORE\n");
   fprintf(f, "  --rtprio <RT-prio>\n");
   fprintf(f, "  --sort\n");
   fprintf(f, "  --verbose\n");
@@ -677,6 +678,7 @@ int main(int argc, char* argv[])
   char dummy;
   int i, n_cores, runtime = 70;
   int* cores;
+  int master_core = 0;
 
   g.rtprio = -1;
   g.max_interruptions = 1000000;
@@ -697,6 +699,10 @@ int main(int argc, char* argv[])
     else if( strcmp(argv[0], "--cores") == 0 && argc > 1 ) {
       cores_opt = argv[1];
       --argc, ++argv;
+    }
+    else if( strcmp(argv[0], "--master-core") == 0 ) {
+      master_core = atoi(argv[1]);
+      --argc; ++argv;
     }
     else if( strcmp(argv[0], "--runtime") == 0 && argc > 1 &&
              sscanf(argv[1], "%u%c", &runtime, &dummy) == 1 ) {
@@ -745,12 +751,16 @@ int main(int argc, char* argv[])
   /* Check which cores we can use by trying to set affinity to each. */
   move_to_root_cpuset();
   TEST( threads = malloc(n_cores * sizeof(threads[0])) );
-  for( i = 0; i < n_cores; ++i )
-    if( move_to_core(cores[i]) == 0 )
-      threads[g.n_threads++].core_i = cores[i];
-    else
-      fprintf(stderr, "%s: WARNING: unable to use core %d\n",
-              APP_NAME, cores[i]);
+  for( i = 0; i < n_cores; ++i ) {
+    if (cores[i] != master_core) {
+      if( move_to_core(cores[i]) == 0 )
+        threads[g.n_threads++].core_i = cores[i];
+      else
+        fprintf(stderr, "%s: WARNING: unable to use core %d\n",
+                APP_NAME, cores[i]);
+    }
+  }
+  TEST(move_to_core(master_core) == 0);
 
   signal(SIGALRM, handle_alarm);
 
