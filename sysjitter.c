@@ -57,6 +57,7 @@ static void usage_msg(FILE* f)
   fprintf(f, "  --cores COMMA-SEP-LIST-OF-CORES-OR-RANGES\n");
   fprintf(f, "  --master-core CORE\n");
   fprintf(f, "  --rtprio <RT-prio>\n");
+  fprintf(f, "  --accept-cpuset\n");
   fprintf(f, "  --sort\n");
   fprintf(f, "  --verbose\n");
   fprintf(f, "  --help\n");
@@ -679,6 +680,7 @@ int main(int argc, char* argv[])
   int i, n_cores, runtime = 70;
   int* cores;
   int master_core = 0;
+  int reset_cpuset = 1;
 
   g.rtprio = -1;
   g.max_interruptions = 1000000;
@@ -713,6 +715,9 @@ int main(int argc, char* argv[])
     }
     else if( strcmp(argv[0], "--verbose") == 0 ) {
       g.verbose = 1;
+    }
+    else if( strcmp(argv[0], "--accept-cpuset") == 0 ) {
+      reset_cpuset = 0;
     }
     else if( strcmp(argv[0], "--help") == 0 ) {
       usage_msg(stdout);
@@ -749,7 +754,9 @@ int main(int argc, char* argv[])
   }
 
   /* Check which cores we can use by trying to set affinity to each. */
-  move_to_root_cpuset();
+  if (reset_cpuset)
+    move_to_root_cpuset();
+
   TEST( threads = malloc(n_cores * sizeof(threads[0])) );
   for( i = 0; i < n_cores; ++i ) {
     if (cores[i] != master_core) {
