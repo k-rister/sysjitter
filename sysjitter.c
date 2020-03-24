@@ -1,7 +1,8 @@
+#define SYSJITTER_VERSION  "1.4"
 /*
- * sysjitter v1.3
+ * sysjitter
  *
- * Copyright 2010-2015 David Riddoch <david@riddoch.org.uk>
+ * Copyright 2010-2017 David Riddoch <david@riddoch.org.uk>
  *
  * This program is free software: you can redistribute it and/or modify it
  * under the terms of version 3 of the GNU General Public License as
@@ -38,6 +39,34 @@
 #include <pthread.h>
 #include <sys/time.h>
 #include <sched.h>
+#include <stdbool.h>
+
+
+/* Used as prefix for error and warning messages. */
+#define APP_NAME  "sysjitter"
+
+
+static void usage_msg(FILE* f)
+{
+  fprintf(f, "usage:\n");
+  fprintf(f, "  %s [options] THRESHOLD_NSEC\n", APP_NAME);
+  fprintf(f, "\n");
+  fprintf(f, "options:\n");
+  fprintf(f, "  --runtime SECONDS\n");
+  fprintf(f, "  --raw FILENAME-PREFIX\n");
+  fprintf(f, "  --cores COMMA-SEP-LIST-OF-CORES-OR-RANGES\n");
+  fprintf(f, "  --sort\n");
+  fprintf(f, "  --verbose\n");
+  fprintf(f, "  --help\n");
+  fprintf(f, "  --version\n");
+}
+
+
+static void usage_err(void)
+{
+  usage_msg(stderr);
+  exit(1);
+}
 
 
 #ifdef __GNUC__
@@ -148,11 +177,10 @@ static struct global g;
 
 static void test_fail(const char* what, int line)
 {
-  fprintf(stderr, "ERROR:\n");
+  fprintf(stderr, "ERROR: Internal error in %s\n", APP_NAME);
   fprintf(stderr, "ERROR: TEST(%s)\n", what);
-  fprintf(stderr, "ERROR: at line %d\n", line);
-  fprintf(stderr, "ERROR: errno=%d (%s)\n", errno, strerror(errno));
-  fprintf(stderr, "ERROR:\n");
+  fprintf(stderr, "ERROR: at line=%d errno=%d (%s)\n",
+          line, errno, strerror(errno));
   exit(1);
 }
 
@@ -367,15 +395,15 @@ static void post_test_checks(struct thread* threads)
     t = &(threads[i]);
     if( t->c_interruption - t->interruptions == g.max_interruptions ) {
       early = 1;
-      fprintf(stderr, "ERROR: Thread %d finished at %.1fs (max=%d)\n", i,
-              cycles_to_sec_f(t, t->frc_stop - t->frc_start),
+      fprintf(stderr, "%s: ERROR: Thread %d finished at %.1fs (max=%d)\n",
+              APP_NAME, i, cycles_to_sec_f(t, t->frc_stop - t->frc_start),
               g.max_interruptions);
     }
   }
 
   if( early ) {
-    fprintf(stderr,
-            "You probably need to increase the interruption threshold.\n");
+    fprintf(stderr, "%s: You probably need to increase the interruption "
+            "threshold.\n", APP_NAME);
     exit(2);
   }
 }
@@ -431,21 +459,33 @@ static void write_thread_raw(struct thread* t, FILE* f)
 }
 
 
-static void write_raw(struct thread* threads, const char* outf)
+static int write_raw(struct thread* threads, const char* outf)
 {
   char fname[strlen(outf) + 10];
   FILE* f;
-  int i;
+  int i, core_digits, max_core_i = -1;
+  int rc = 0;
+
+  /* Find out max core_i so we can pad the core_i in the filename to the
+   * appropriate width.
+   */
+  for( i = 0; i < g.n_threads; ++i )
+    if( threads[i].core_i > max_core_i )
+      max_core_i = threads[i].core_i;
+  sprintf(fname, "%d%n", max_core_i, &core_digits);
+
   for( i = 0; i < g.n_threads; ++i ) {
-    sprintf(fname, "%s.%d", outf, i);
+    sprintf(fname, "%s.%0*d", outf, core_digits, threads[i].core_i);
     if( (f = fopen(fname, "w")) == NULL ) {
-      fprintf(stderr, "ERROR: Could not open '%s' for writing\n", fname);
-      fprintf(stderr, "ERROR: %s\n", strerror(errno));
+      fprintf(stderr, "%s: ERROR: Could not open '%s' for writing (%s)\n",
+              APP_NAME, fname, strerror(errno));
+      rc = 3;
       continue;
     }
     write_thread_raw(&(threads[i]), f);
     fclose(f);
   }
+  return rc;
 }
 
 
@@ -581,27 +621,47 @@ static void handle_alarm(int code)
 }
 
 
-static void usage(const char* prog)
+static void append_int(int** list, int* list_len, int val)
 {
-  fprintf(stderr, "usage:\n");
-  fprintf(stderr, "  %s [options] <threshold_nsec>\n", prog);
-  fprintf(stderr, "\n");
-  fprintf(stderr, "options:\n");
-  fprintf(stderr, "  --runtime <seconds>\n");
-  fprintf(stderr, "  --raw <filename-prefix>\n");
-  fprintf(stderr, "  --sort\n");
-  fprintf(stderr, "  --verbose\n");
-  exit(1);
+  int idx = (*list_len)++;
+  TEST( *list = realloc(*list, *list_len * sizeof(int)) );
+  (*list)[idx] = val;
+}
+
+
+static bool parse_comma_sep_ranges(const char* csr_in,
+                                   int** list, int* list_len)
+{
+  char* csr = strdupa(csr_in);
+  char *saveptr = NULL, *t;
+  unsigned low, high;
+  char dummy;
+
+  *list = NULL;
+  *list_len = 0;
+
+  while( (t = strtok_r(csr, ",", &saveptr)) != NULL ) {
+    csr = NULL;
+    if( sscanf(t, "%u - %u%c", &low, &high, &dummy) == 2 )
+      for( ; low <= high; ++low )
+        append_int(list, list_len, low);
+    else if( sscanf(t, "%u%c", &low, &dummy) == 1 )
+      append_int(list, list_len, low);
+    else
+      return false;
+  }
+  return true;
 }
 
 
 int main(int argc, char* argv[])
 {
   struct thread* threads;
-  const char* app = argv[0];
-  const char* outf = NULL;
+  const char* raw_prefix = NULL;
+  const char* cores_opt = NULL;
   char dummy;
   int i, n_cores, runtime = 70;
+  int* cores;
 
   g.max_interruptions = 1000000;
 
@@ -615,7 +675,11 @@ int main(int argc, char* argv[])
       --argc, ++argv;
     }
     else if( strcmp(argv[0], "--raw") == 0 && argc > 1 ) {
-      outf = argv[1];
+      raw_prefix = argv[1];
+      --argc, ++argv;
+    }
+    else if( strcmp(argv[0], "--cores") == 0 && argc > 1 ) {
+      cores_opt = argv[1];
       --argc, ++argv;
     }
     else if( strcmp(argv[0], "--runtime") == 0 && argc > 1 &&
@@ -628,21 +692,45 @@ int main(int argc, char* argv[])
     else if( strcmp(argv[0], "--verbose") == 0 ) {
       g.verbose = 1;
     }
+    else if( strcmp(argv[0], "--help") == 0 ) {
+      usage_msg(stdout);
+      exit(0);
+    }
+    else if( strcmp(argv[0], "--version") == 0 ) {
+      printf("%s\n", SYSJITTER_VERSION);
+      exit(0);
+    }
     else {
-      usage(app);
+      usage_err();
     }
   }
 
   if( argc != 1  ||
       sscanf(argv[0], "%u%c", &g.threshold_nsec, &dummy) != 1 )
-    usage(app);
+    usage_err();
 
+  if( cores_opt == NULL ) {
+    n_cores = sysconf(_SC_NPROCESSORS_CONF);
+    TEST( cores = malloc(n_cores * sizeof(cores[0])) );
+    for( i = 0; i < n_cores; ++i )
+      cores[i] = i;
+  }
+  else {
+    if( ! parse_comma_sep_ranges(cores_opt, &cores, &n_cores) ) {
+      fprintf(stderr, "%s: ERROR: badly formatted --cores arg\n", APP_NAME);
+      exit(2);
+    }
+  }
+
+  /* Check which cores we can use by trying to set affinity to each. */
   move_to_root_cpuset();
-  n_cores = sysconf(_SC_NPROCESSORS_CONF);
   TEST( threads = malloc(n_cores * sizeof(threads[0])) );
   for( i = 0; i < n_cores; ++i )
-    if( move_to_core(i) == 0 )
-      threads[g.n_threads++].core_i = i;
+    if( move_to_core(cores[i]) == 0 )
+      threads[g.n_threads++].core_i = cores[i];
+    else
+      fprintf(stderr, "%s: WARNING: unable to use core %d\n",
+              APP_NAME, cores[i]);
 
   signal(SIGALRM, handle_alarm);
 
@@ -654,9 +742,9 @@ int main(int argc, char* argv[])
   /* NB. Important to write raw results first, as write_summary() sorts the
    * interruptions.
    */
-  if( outf )
-    write_raw(threads, outf);
+  int err = 0;
+  if( raw_prefix )
+    err = write_raw(threads, raw_prefix);
   write_summary(threads, stdout);
-
-  return 0;
+  return err;
 }
