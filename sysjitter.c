@@ -573,8 +573,7 @@ static void run_expt(struct thread* threads, int runtime_secs)
   gettimeofday(&g.tv_start, NULL);
   g.cmd = GO;
 
-  usleep(1000000 * runtime_secs);
-  g.cmd = STOP;
+  alarm(runtime_secs);
 
   /* Go to sleep until the threads have done their stuff. */
   for( i = 0; i < g.n_threads; ++i )
