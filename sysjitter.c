@@ -316,8 +316,8 @@ static void* thread_main(void* arg)
   t->cpu_mhz = measure_cpu_mhz();
 
   /* Last thread to get here starts the timer. */
-  if( atomic_inc(&g.n_threads_ready) == g.n_threads )
-    alarm(g.runtime_secs);
+  //if( atomic_inc(&g.n_threads_ready) == g.n_threads )
+  //  alarm(g.runtime_secs);
   /* Ensure we all start at the same time. */
   atomic_inc(&g.n_threads_running);
   while( g.n_threads_running != g.n_threads )
@@ -572,6 +572,9 @@ static void run_expt(struct thread* threads, int runtime_secs)
     usleep(1000);
   gettimeofday(&g.tv_start, NULL);
   g.cmd = GO;
+
+  usleep(1000000 * runtime_secs);
+  g.cmd = STOP;
 
   /* Go to sleep until the threads have done their stuff. */
   for( i = 0; i < g.n_threads; ++i )
