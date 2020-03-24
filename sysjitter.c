@@ -55,6 +55,7 @@ static void usage_msg(FILE* f)
   fprintf(f, "  --runtime SECONDS\n");
   fprintf(f, "  --raw FILENAME-PREFIX\n");
   fprintf(f, "  --cores COMMA-SEP-LIST-OF-CORES-OR-RANGES\n");
+  fprintf(f, "  --rtprio <RT-prio>\n");
   fprintf(f, "  --sort\n");
   fprintf(f, "  --verbose\n");
   fprintf(f, "  --help\n");
@@ -153,6 +154,7 @@ struct global {
   struct timeval        tv_start;
   int                   sort_raw;
   int                   verbose;
+  int                   rtprio;
 
   /* Mutable state. */
   volatile enum command cmd;
@@ -279,6 +281,15 @@ static void doit(struct thread* t, cycles_t threshold_cycles)
   t->int_total = int_total;
 }
 
+static int set_fifo_prio(int prio)
+{
+	struct sched_param param;
+
+	memset(&param, 0, sizeof(param));
+	param.sched_priority = prio;
+	return sched_setscheduler(0, SCHED_FIFO, &param);
+}
+
 
 static void* thread_main(void* arg)
 {
@@ -293,6 +304,8 @@ static void* thread_main(void* arg)
    * the "struct thread" since we expect that to stay cache resident.
    */
   TEST(move_to_core(t->core_i) == 0);
+  if (g.rtprio != -1)
+	  TEST(set_fifo_prio(g.rtprio) == 0);
   thread_init(t);
 
   /* Don't bash the cpu until all threads have got going. */
@@ -663,6 +676,7 @@ int main(int argc, char* argv[])
   int i, n_cores, runtime = 70;
   int* cores;
 
+  g.rtprio = -1;
   g.max_interruptions = 1000000;
 
   --argc; ++argv;
@@ -699,6 +713,10 @@ int main(int argc, char* argv[])
     else if( strcmp(argv[0], "--version") == 0 ) {
       printf("%s\n", SYSJITTER_VERSION);
       exit(0);
+    }
+    else if( strcmp(argv[0], "--rtprio") == 0 ) {
+      g.rtprio = atoi(argv[1]);
+      --argc; ++argv;
     }
     else {
       usage_err();
