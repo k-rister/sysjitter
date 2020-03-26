@@ -40,6 +40,7 @@
 #include <sys/time.h>
 #include <sched.h>
 #include <stdbool.h>
+#include <sys/mman.h>
 
 
 /* Used as prefix for error and warning messages. */
@@ -235,7 +236,6 @@ static void thread_init(struct thread* t)
 {
   int bytes = g.max_interruptions * sizeof(struct interruption);
   TEST(t->interruptions = malloc(bytes));
-  memset(t->interruptions, 0, bytes);  /* touch to fault in */
   t->c_interruption = t->interruptions;
   TEST(t->sorted = malloc(g.max_interruptions * sizeof(t->sorted[0])));
 }
@@ -572,6 +572,10 @@ static void run_expt(struct thread* threads, int runtime_secs)
                          thread_main, &(threads[i])));
   while( g.n_threads_started != g.n_threads )
     usleep(1000);
+
+  /* Lock all pages in the address space so that they are resident */
+  TEST0(mlockall(MCL_CURRENT | MCL_FUTURE));
+
   gettimeofday(&g.tv_start, NULL);
   g.cmd = GO;
 
@@ -580,6 +584,9 @@ static void run_expt(struct thread* threads, int runtime_secs)
   /* Go to sleep until the threads have done their stuff. */
   for( i = 0; i < g.n_threads; ++i )
     pthread_join(threads[i].thread_id, NULL);
+
+  munlockall();
+
   post_test_checks(threads);
 }
 
